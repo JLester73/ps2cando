@@ -7,7 +7,7 @@ YEAR=2017
 desc "Exports from PowerSchool"
 task :default do
 desc "Build the export"
-  sh "./ps2cando --in input-teachers.csv --year #{YEAR}"
+  sh "ruby ps2cando --in input-teachers.csv --year #{YEAR}"
   # Sort courses
   mv "courses.csv", "courses-temp.csv"
   sh "cat courses-temp.csv|sort|uniq > courses.csv"
