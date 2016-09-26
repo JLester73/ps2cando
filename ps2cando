@@ -1,0 +1,239 @@
+#!/usr/bin/ruby
+
+require 'getoptlong'
+require 'oci8'
+require 'log4r'
+require 'date'
+require 'yaml'
+include Log4r
+require_relative 'lib/student.rb'
+require_relative  'lib/course.rb'
+require_relative 'lib/section.rb'
+require_relative 'lib/teacher.rb'
+require_relative 'lib/school.rb'
+
+# Option parsing
+opts = GetoptLong.new(
+		["--in", "-i", GetoptLong::REQUIRED_ARGUMENT],
+    ["--year", "-y", GetoptLong::REQUIRED_ARGUMENT]
+		)
+
+def print_usage(error)
+	print "#{__FILE__}: --in input_file --year \n"
+	exit
+end
+
+def process_teacher_data(dbh, id)
+  teacher_query = "SELECT u.email_addr, u.first_name, u.middle_name, " +
+    "u.last_name, u.preferredname, ss.sched_gender AS gender, " +
+    "u.teachernumber AS teacher_number " +
+    "FROM users u INNER JOIN schoolstaff ss ON ss.users_dcid = u.dcid " +
+    "WHERE u.teachernumber='" + id.to_s + "' ORDER by u.dcid"
+  tch_sth = dbh.exec(teacher_query)
+  # Extract the teacher records
+  if row = tch_sth.fetch_hash
+    CSV.open('teachers.csv', 'a+') do |teachers_csv|
+      begin # Teacher Processing
+        teacher = Teacher.new(row['EMAIL_ADDR'], 
+                              row['TEACHER_NUMBER'],
+                              row['FIRST_NAME'], 
+                              row['MIDDLE_NAME'], 
+                              row['LAST_NAME'], 
+                              row['PREFERREDNAME'], row['GENDER'], 
+                              'teacher')
+        teachers_csv << teacher.to_a
+      rescue RuntimeError => e
+        teacher_number = row['TEACHER_NUMBER']
+        if !teacher_number.nil?
+          puts "#{teacher_number}: #{e}"
+        else
+          puts "#{e}"
+        end
+      end # End Teacher Processing
+    end
+  end
+end
+
+def process_section_data(row, sections_csv)
+  begin # Section Processing
+    section = Section.new(row['COURSE_NUMBER'], 
+                          row['SECTION_NUMBER'], 
+                          row['COURSE_NAME'], 
+                          row['ALTERNATE_SCHOOL_NUMBER'], 
+                          row['SCHOOL_ABBR'], '', row['MARK_PERIOD'],
+                          row['EXPRESSION'], row['TEACHER_NUMBER'],
+                          row['TCH_FIRST_NAME'], 
+                          row['TCH_LAST_NAME'], 
+                          row['STUDENT_NUMBER'], 
+                          row['FIRST_NAME'], 
+                          row['LAST_NAME'])
+    sections_csv << section.to_a
+  rescue RuntimeError => e
+    expression = row['EXPRESSION']
+    if !expression.nil?
+      puts "#{expression}: #{e}"
+    else
+      puts "#{e}"
+    end
+  end # End Section Processing
+end
+
+def process_student_data(row, students_csv)
+  begin # Student Processing
+    student = Student.new(row['STUDENT_NUMBER'], row['FIRST_NAME'],
+                          row['MIDDLE_NAME'], row['LAST_NAME'], 
+                          row['DOB'], row['GENDER'], 
+                          row['ETHNICITY'], row['GRADE_LEVEL'], 
+                          row['STATE_STUDENTNUMBER'])
+    students_csv << student.to_a
+  rescue RuntimeError => e
+    student_number = row['STUDENT_NUMBER']
+    if !student_number.nil?
+      puts "#{student_number.to_i}: #{e}"
+    else
+      puts "#{e}"
+    end
+  end # End Student Processing
+end
+
+def process_course_data(row, courses_csv, year)
+  begin # Course Processing
+    school_year = (year + 1990).to_s + "-" + (year + 1991).to_s
+    course = Course.new(school_year, row['COURSE_NUMBER'], 
+                        row['VA_COURSE_CODE'], 
+                        row['COURSE_NAME'],
+                        row['SCHED_FULLCATALOGDESCRIPTION'],
+                        row['CREDIT_HOURS'])
+    courses_csv << course.to_a
+  rescue RuntimeError => e
+    course = row['COURSE_NUMBER']
+    if !course.nil?
+      puts "#{course}: #{e}"
+    else
+      puts "#{e}"
+    end
+  end # End Course Processing
+end
+
+def process_school_data(row, schools_csv)
+  begin # School Processing
+    school = School.new(row['ALTERNATE_SCHOOL_NUMBER'], 
+                        'Location', 
+                        row['SCHOOL_ABBR'],
+                        row['SCHOOL_NAME'])
+    schools_csv << school.to_a
+  rescue RuntimeError => e
+    school = row['ALTERNATE_SCHOOL_NUMBER']
+    if !school.nil?
+      puts "#{school}: #{e}"
+    else
+      puts "#{e}"
+    end
+  end # End School Processing
+end
+
+input_file = ''
+have_input_f = false
+year = 0
+have_year_f = false
+#begin
+	opts.each do |opt, arg|
+		case opt
+			when '--in'
+        input_file = arg
+				have_input_f = true
+			when '--year'
+        year = arg.to_i - 1 - 1990
+				have_year_f = true
+		end
+	end
+
+	# No options give, but we require option --in and option --year
+	if (!have_input_f || !have_year_f)
+		print_usage(1)
+	end
+#rescue
+#	print_usage(1)
+#end
+
+def read_config(db_login, db_password, db_instance)
+  begin
+    config = YAML.load_file("config/ps2cando.yaml")
+	@db_login = config["config"]["db_login"]
+	@db_password = config["config"]["db_password"]
+	@db_instance = config["config"]["db_instance"]
+  end
+end
+
+begin 
+    # Read in config file
+    read_config(@db_login, @db_password, @db_instance)
+	CSV.foreach(input_file) do |row|
+	
+    # Pull in teacher id from csv
+		id = row[0]
+    first_name = row[2]
+    last_name = row[1]
+		
+		begin
+			dbh = OCI8.new(@db_login, @db_password, @db_instance)
+
+      process_teacher_data(dbh, id)
+
+      section_query = "SELECT cc.course_number, course_name, " +
+        "sched_fullcatalogdescription, " +
+        "ps_customfields.getCoursescf(c.id, 'va_course_code') AS "+
+        " va_course_code, c.credit_hours," +
+        "sch.abbreviation as school_abbr, sch.alternate_school_number, " +
+        "sch.name as school_name, " +
+        "t.abbreviation as mark_period, cc.expression, " +
+        "cc.section_number, u.teachernumber AS teacher_number, " +
+        "u.last_name as tch_last_name, u.first_name as tch_first_name, " + 
+        "st.student_number, st.last_name, st.middle_name, st.first_name, " +
+        "to_char(st.dob, 'YYYY-MM-DD') as dob, " +
+        "st.gender, st.ethnicity, st.grade_level, " +
+        "st.state_studentnumber " +
+        "FROM cc " + 
+        "INNER JOIN terms t ON t.id = cc.termid AND " +
+        "t.schoolid = cc.schoolid " + 
+        "INNER JOIN schools sch ON cc.schoolid=sch.school_number " +
+        "INNER JOIN students st ON st.id=cc.studentid " +
+        "INNER JOIN courses c ON c.course_number=cc.course_number " +
+        "INNER JOIN sections ON sections.id=cc.sectionid " +
+        "INNER JOIN schoolstaff ss ON ss.id = sections.teacher " +
+        "INNER JOIN users u ON ss.users_dcid = u.dcid " +
+        "WHERE u.teachernumber='" + id.to_s + "' AND t.yearid=" + year.to_s
+			sth = dbh.exec(section_query)
+      message = sprintf("Processing: %s, %s - %i\n", last_name, first_name, id)
+      puts message + "\n"
+      CSV.open('sections.csv', 'a+', {:force_quotes => true}) do |sections_csv|
+        CSV.open('students.csv', 'a+', {:force_quotes => true}) do |students_csv|
+          CSV.open('courses.csv', 'a+', {:force_quotes => true}) do |courses_csv|
+            CSV.open('resources.csv', 'a+', {:force_quotes => true}) do |schools_csv|
+
+              # Begin precessing rows from database
+              while row = sth.fetch_hash
+
+                process_section_data(row, sections_csv)
+
+                process_student_data(row, students_csv)
+
+                process_course_data(row, courses_csv, year)
+              
+                process_school_data(row, schools_csv)
+              end
+            end       
+          end
+			  end
+      end
+		rescue OCIError => e
+			puts "An error occurred"
+		  puts "Error code: #{e}"
+		ensure
+    	# disconnect from server
+    	dbh.logoff if dbh
+		end
+	end
+rescue SystemCallError => errno
+	puts errno
+end
