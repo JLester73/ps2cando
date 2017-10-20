@@ -1,6 +1,6 @@
 require 'rake/clean'
 
-YEAR=2017
+YEAR=2018
 
 # Files to be built
 
